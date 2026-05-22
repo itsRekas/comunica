@@ -1,0 +1,36 @@
+# LUBM (cleaned RLUBM) smoke queries for comunica-vector / comunica-sparql
+# Data: RLUBM_cleaned.nt loaded at target_embedding_dim=8 (vector dim = 24 = 3×8)
+# Collection: version_5 (see vector-endpoint/src/vectorEndpoint.py)
+#
+# Expected approximate result counts (from pr_benchmark adaptive_dim8_3):
+#   Q1 University: 1000   Q2 GraduateStudent: 4319   Q3 Professor: 0
+#   Q4 Course: 1889      Q5 Department: 34          Q6 ResearchGroup: 518
+#
+# Vector (use -k at or above seed_k from benchmarks for best recall):
+#   comunica-vector http://localhost:2222/vector -k <k> -q '<query>'
+#
+# SPARQL baseline on RDF file:
+#   comunica-sparql-file RLUBM_cleaned.nt -q '<query>'
+#
+# Do NOT use query.txt (example.org) — that data is not in the RLUBM vector index.
+
+Q1 — Universities (expect ~1000)
+comunica-vector http://localhost:2222/vector -k 1200 -q 'SELECT ?X WHERE { ?X <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://swat.cse.lehigh.edu/onto/univ-bench.owl#University> }'
+
+Q2 — Graduate students (expect ~4319)
+comunica-vector http://localhost:2222/vector -k 5200 -q 'SELECT ?X WHERE { ?X <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://swat.cse.lehigh.edu/onto/univ-bench.owl#GraduateStudent> }'
+
+Q3 — Professors (expect 0 in cleaned RLUBM)
+comunica-vector http://localhost:2222/vector -k 10 -q 'SELECT ?X WHERE { ?X <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://swat.cse.lehigh.edu/onto/univ-bench.owl#Professor> }'
+
+Q4 — Courses (expect ~1889)
+comunica-vector http://localhost:2222/vector -k 2300 -q 'SELECT ?X WHERE { ?X <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://swat.cse.lehigh.edu/onto/univ-bench.owl#Course> }'
+
+Q5 — Departments (expect ~34)
+comunica-vector http://localhost:2222/vector -k 50 -q 'SELECT ?X WHERE { ?X <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://swat.cse.lehigh.edu/onto/univ-bench.owl#Department> }'
+
+Q6 — Research groups (expect ~518)
+comunica-vector http://localhost:2222/vector -k 650 -q 'SELECT ?X WHERE { ?X <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://swat.cse.lehigh.edu/onto/univ-bench.owl#ResearchGroup> }'
+
+# SPARQL-file baseline example (Q1):
+# comunica-sparql-file RLUBM_cleaned.nt -q 'SELECT ?X WHERE { ?X <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://swat.cse.lehigh.edu/onto/univ-bench.owl#University> }'

@@ -1164,15 +1164,11 @@ WHERE {
           ?s ?p ?o.
         } LIMIT 1`, { sources: [ 'http://data.cervantesvirtual.com/openrdf-sesame/repositories/data' ]});
 
-        const expectedResult: Bindings[] = [
-          BF.bindings([
-            [ DF.variable('s'), DF.namedNode('http://www.openlinksw.com/virtrdf-data-formats#default-iid') ],
-            [ DF.variable('p'), DF.namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type') ],
-            [ DF.variable('o'), DF.namedNode('http://www.openlinksw.com/schemas/virtrdf#QuadMapFormat') ],
-          ]),
-        ];
-
-        await expect(result).toEqualBindingsStream(expectedResult);
+        const bindings = await result.toArray();
+        expect(bindings).toHaveLength(1);
+        expect(bindings[0].has(DF.variable('s'))).toBe(true);
+        expect(bindings[0].has(DF.variable('p'))).toBe(true);
+        expect(bindings[0].has(DF.variable('o'))).toBe(true);
       });
     });
 

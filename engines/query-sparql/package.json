@@ -37,7 +37,8 @@
   "bin": {
     "comunica-sparql": "bin/query.js",
     "comunica-sparql-http": "bin/http.js",
-    "comunica-dynamic-sparql": "bin/query-dynamic.js"
+    "comunica-dynamic-sparql": "bin/query-dynamic.js",
+    "comunica-vector": "bin/vector.js"
   },
   "files": [
     "bin/**/*.d.ts",
@@ -263,6 +264,7 @@
     "@comunica/actor-query-source-identify-hypermedia-none": "^5.2.2",
     "@comunica/actor-query-source-identify-hypermedia-qpf": "^5.2.2",
     "@comunica/actor-query-source-identify-hypermedia-sparql": "^5.2.2",
+    "@comunica/actor-query-source-identify-hypermedia-vector": "^5.2.2",
     "@comunica/actor-query-source-identify-rdfjs": "^5.2.2",
     "@comunica/actor-query-source-identify-serialized": "^5.2.2",
     "@comunica/actor-rdf-join-entries-sort-cardinality": "^5.2.2",

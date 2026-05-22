@@ -1533,7 +1533,7 @@ describe('QuerySourceSparql', () => {
       jest.useRealTimers();
     });
 
-    it('should pass the original queryString if defined', async() => {
+    it('should build SELECT from algebra even when queryString is defined', async() => {
       await expect(source.queryBindings(
         AF.createPattern(iriS, DF.variable('p'), iriO),
         ctx.set(KeysInitQuery.queryString, 'abc'),
@@ -1550,15 +1550,8 @@ describe('QuerySourceSparql', () => {
           }),
         ]);
 
-      expect(mediatorHttp.mediate).toHaveBeenCalledWith({
-        context: ctx.set(KeysInitQuery.queryString, 'abc'),
-        init: {
-          body: new URLSearchParams({ query: 'abc' }),
-          headers: expect.anything(),
-          method: 'POST',
-        },
-        input: url,
-      });
+      expect(lastQuery).not.toBe('abc');
+      expect(lastQuery).toContain('SELECT');
     });
 
     it('should not pass the original queryString if queryFormat is not sparql', async() => {

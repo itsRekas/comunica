@@ -24,6 +24,68 @@
 
 **[Learn more about Comunica on our website](https://comunica.dev/).**
 
+## Colab additions (`itsRekas/comunica`)
+
+This directory is the **canonical** Comunica fork: **Comunica 5.2.2** (`itsRekas/comunica`) with Colab research changes. It adds vector-backed triple-pattern queries against [vector-endpoint](https://github.com/itsRekas/comunica) (Milvus + Flask on port 2222).
+
+### What was added
+
+| Addition | Location |
+| -------- | -------- |
+| **Vector query source** | `packages/actor-query-source-identify-hypermedia-vector/` — `QuerySourceVector`, `ActorQuerySourceIdentifyHypermediaVector`, CLI args handler (`-k` / `--k`) |
+| **`comunica-vector` CLI** | `engines/query-sparql/bin/vector.ts` — registers vector sources and forwards `k` to the endpoint |
+| **Engine wiring** | `engines/config-query-sparql/config/query-source-identify-hypermedia/actors.json` — vector actor registered alongside SPARQL/QPF/none |
+| **Example query files** | `query.txt` (small example.org demos), `query-lubm.txt` (RLUBM / dim=8 smoke queries), `RLUBM_cleaned.nt` (benchmark RDF) |
+| **Migration notes** | `SWITCH.md` — build, link CLIs, Milvus load, cutover from v4 |
+
+The vector source sends `POST` requests to a URL such as `http://localhost:2222/vector` with JSON:
+
+```json
+{
+  "pattern": { "subject": "<term>", "predicate": "<term>", "object": "<term>" },
+  "vars": ["X"],
+  "k": 1200,
+  "values": []
+}
+```
+
+The endpoint returns `{ "vars": ["X"], "rows": [{ "X": "<term>" }] }`. Use **`-k`** to set the Milvus search limit (important for recall on large classes like GraduateStudent).
+
+### What was changed
+
+| Change | Location | Notes |
+| ------ | -------- | ----- |
+| **Default engine config** | `engines/config-query-sparql/config/config-default-v5-1-3.json` | Imports `actors.json` so the compiled default engine includes the vector actor |
+| **SPARQL remote source** | `packages/actor-query-source-identify-hypermedia-sparql/lib/QuerySourceSparql.ts` | Always serializes remote operations via `operationToSelectQuery` (not only native SELECT shapes); adds debug logging to stderr |
+| **SPARQL tests** | `packages/actor-query-source-identify-hypermedia-sparql/test/QuerySourceSparql-test.ts` | Updated for the new query-serialization behavior |
+| **Integration test** | `engines/query-sparql/test/QuerySparql-test.ts` | Relaxed flaky network assertion for Server header detection |
+
+### Quick start (vector)
+
+```bash
+yarn install && yarn build && yarn run build:engines
+cd engines/query-sparql && yarn link   # optional: put comunica-vector on PATH
+```
+
+With **vector-endpoint** running and Milvus collection `version_5` loaded (see `SWITCH.md`):
+
+```bash
+comunica-vector http://localhost:2222/vector -k 1200 -q \
+  'SELECT ?X WHERE { ?X <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://swat.cse.lehigh.edu/onto/univ-bench.owl#University> }'
+```
+
+Use **`query-lubm.txt`** for RLUBM benchmarks (dim=8, collection `version_5`). **`query.txt`** uses example.org data that is **not** in the RLUBM vector index — empty vector results there are expected.
+
+SPARQL-file baseline on the same RDF:
+
+```bash
+comunica-sparql-file RLUBM_cleaned.nt -q 'SELECT ?X WHERE { ... }'
+```
+
+See **`SWITCH.md`** for repository layout (`comunica`), build/link instructions
+
+---
+
 Comunica is an open-source project that is used by [many other projects](https://github.com/comunica/comunica/network/dependents),
 and is being maintained by a [group of volunteers](https://github.com/comunica/comunica/graphs/contributors).
 If you would like to support this project, you may consider:

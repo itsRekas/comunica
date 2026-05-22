@@ -1,0 +1,47 @@
+Q1.
+comunica-sparql http://localhost:2222/sparql -q 'SELECT ?s ?p ?o
+WHERE {
+  ?s <http://example.org/occupation> "Software Engineer" 
+}'
+
+Q2.
+comunica-sparql http://localhost:2222/sparql -q '
+SELECT ?person ?name
+WHERE {
+  ?person <http://example.org/occupation> "Software Engineer" .
+  ?person <http://example.org/name> ?name .
+}'
+
+Q3.
+comunica-sparql http://localhost:2222/sparql -q '
+SELECT ?person ?name ?age
+WHERE {
+  ?person <http://example.org/occupation> "Software Engineer" .
+  ?person <http://example.org/name> ?name .
+  ?person <http://example.org/age> ?age .
+}'
+
+vector version
+
+Q1.
+comunica-vector http://localhost:2222/vector -q 'SELECT ?s
+WHERE {
+  ?s <http://example.org/occupation> "Software Engineer" 
+}'
+
+Q2.
+comunica-vector http://localhost:2222/vector -q '
+SELECT ?person ?name
+WHERE {
+  ?person <http://example.org/occupation> "Software Engineer" .
+  ?person <http://example.org/name> ?name .
+}'
+
+Q3.
+comunica-vector http://localhost:2222/vector -q '
+SELECT ?person ?name ?age
+WHERE {
+  ?person <http://example.org/occupation> "Software Engineer" .
+  ?person <http://example.org/name> ?name .
+  ?person <http://example.org/age> ?age .
+}'

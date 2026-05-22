@@ -196,12 +196,17 @@ export class QuerySourceSparql implements IQuerySource {
       // Prepare queries
       const operation = await operationPromise;
       const variables: RDF.Variable[] = algebraUtils.inScopeVariables(operation);
-      const queryString = context.get<string>(KeysInitQuery.queryString);
-      const queryFormat: RDF.QueryFormat = context.getSafe(KeysInitQuery.queryFormat);
-      const selectQuery: string = !options?.joinBindings && queryString && queryFormat.language === 'sparql' ?
-        queryString :
-        await this.operationToSelectQuery(this.algebraFactory, operation, variables);
+      const selectQuery: string = await this.operationToSelectQuery(this.algebraFactory, operation, variables);
       const undefVariables = QuerySourceSparql.getOperationUndefs(operation);
+
+      // eslint-disable-next-line no-console -- Colab research debug logging
+      console.error('[QuerySourceSparql] Sending query to', this.url);
+      // eslint-disable-next-line no-console -- Colab research debug logging
+      console.error('Operation type:', operation.type);
+      // eslint-disable-next-line no-console -- Colab research debug logging
+      console.error('Query:', selectQuery);
+      // eslint-disable-next-line no-console -- Colab research debug logging
+      console.error('---');
 
       return this.queryBindingsRemote(this.url, selectQuery, variables, context, undefVariables);
     }, { autoStart: false });
