@@ -43,6 +43,6 @@ Collection `version_5` must be loaded (embedding dim **24** = 3×8):
 cd vector-endpoint
 .venv/bin/python scripts/check_milvus_collection.py
 # if empty:
-.venv/bin/python src/load.py data/nts/RLUBM_cleaned.nt \
+.venv/bin/python -m vector_endpoint.load data/nts/RLUBM_cleaned.nt \
   --collection version_5 --target-embedding-dim 8 --catalog-out catalog.pkl --log
 ```

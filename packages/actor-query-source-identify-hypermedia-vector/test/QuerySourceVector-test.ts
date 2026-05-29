@@ -118,6 +118,13 @@ describe('QuerySourceVector', () => {
     expect(() => QuerySourceVector.termFromJson({ type: 'unknown' }, DF)).toThrow('Unsupported term JSON');
   });
 
+  it('should read a stream to string from both Buffer and string chunks', async() => {
+    await expect(QuerySourceVector.readStreamToString(Readable.from([ Buffer.from('he'), Buffer.from('llo') ])))
+      .resolves.toBe('hello');
+    await expect(QuerySourceVector.readStreamToString(Readable.from([ 'wor', 'ld' ], { objectMode: true })))
+      .resolves.toBe('world');
+  });
+
   it('should convert RDF terms to JSON', () => {
     expect(QuerySourceVector.termOrVarToJson(DF.variable('s'))).toBe('s');
     expect(QuerySourceVector.termOrVarToJson(DF.namedNode('http://ex/s')))

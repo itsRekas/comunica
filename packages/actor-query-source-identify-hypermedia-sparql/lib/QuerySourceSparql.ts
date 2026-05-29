@@ -199,15 +199,6 @@ export class QuerySourceSparql implements IQuerySource {
       const selectQuery: string = await this.operationToSelectQuery(this.algebraFactory, operation, variables);
       const undefVariables = QuerySourceSparql.getOperationUndefs(operation);
 
-      // eslint-disable-next-line no-console -- Colab research debug logging
-      console.error('[QuerySourceSparql] Sending query to', this.url);
-      // eslint-disable-next-line no-console -- Colab research debug logging
-      console.error('Operation type:', operation.type);
-      // eslint-disable-next-line no-console -- Colab research debug logging
-      console.error('Query:', selectQuery);
-      // eslint-disable-next-line no-console -- Colab research debug logging
-      console.error('---');
-
       return this.queryBindingsRemote(this.url, selectQuery, variables, context, undefVariables);
     }, { autoStart: false });
     this.attachMetadata(bindings, context, operationPromise);

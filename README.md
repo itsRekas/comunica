@@ -24,7 +24,7 @@
 
 **[Learn more about Comunica on our website](https://comunica.dev/).**
 
-## Colab additions (`itsRekas/comunica`)
+## Vector query extension (`itsRekas/comunica`)
 
 This directory is the **canonical** Comunica fork: **Comunica 5.2.2** (`itsRekas/comunica`) with Colab research changes. It adds vector-backed triple-pattern queries against [vector-endpoint](https://github.com/itsRekas/comunica) (Milvus + Flask on port 2222).
 
@@ -56,7 +56,7 @@ The endpoint returns `{ "vars": ["X"], "rows": [{ "X": "<term>" }] }`. Use **`-k
 | Change | Location | Notes |
 | ------ | -------- | ----- |
 | **Default engine config** | `engines/config-query-sparql/config/config-default-v5-1-3.json` | Imports `actors.json` so the compiled default engine includes the vector actor |
-| **SPARQL remote source** | `packages/actor-query-source-identify-hypermedia-sparql/lib/QuerySourceSparql.ts` | Always serializes remote operations via `operationToSelectQuery` (not only native SELECT shapes); adds debug logging to stderr |
+| **SPARQL remote source** | `packages/actor-query-source-identify-hypermedia-sparql/lib/QuerySourceSparql.ts` | Always serializes remote operations via `operationToSelectQuery` (not only native SELECT shapes) |
 | **SPARQL tests** | `packages/actor-query-source-identify-hypermedia-sparql/test/QuerySourceSparql-test.ts` | Updated for the new query-serialization behavior |
 | **Integration test** | `engines/query-sparql/test/QuerySparql-test.ts` | Relaxed flaky network assertion for Server header detection |
 

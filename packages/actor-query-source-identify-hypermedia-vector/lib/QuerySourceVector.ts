@@ -1,5 +1,6 @@
-/* eslint-disable no-console, max-len, style/multiline-ternary, no-implicit-coercion, antfu/consistent-list-newline, unicorn/no-useless-undefined, style/arrow-parens, ts/consistent-type-assertions, unicorn/no-useless-promise-resolve-reject, unicorn/no-negated-condition, style/quote-props, unicorn/prefer-string-slice, ts/no-unnecessary-type-assertion -- Colab vector source port with research debug logging */
+/* eslint-disable max-len, style/multiline-ternary, unicorn/no-useless-undefined, style/arrow-parens, ts/consistent-type-assertions, unicorn/no-useless-promise-resolve-reject, unicorn/no-negated-condition, style/quote-props, ts/no-unnecessary-type-assertion */
 import type { MediatorHttp } from '@comunica/bus-http';
+import { ActorHttp } from '@comunica/bus-http';
 import type {
   Bindings,
   BindingsStream,
@@ -68,42 +69,24 @@ export class QuerySourceVector implements IQuerySource {
     context: IActionContext,
     options?: IQueryBindingsOptions,
   ): BindingsStream {
-    console.error('[QuerySourceVector] queryBindings called!');
-    console.error('  URL:', this.url);
-    console.error('  Operation type:', operationIn.type);
-    console.error('  Options:', options ? JSON.stringify({
-      hasJoinBindings: !!options.joinBindings,
-      hasFilterBindings: !!options.filterBindings,
-    }) : 'undefined');
-
     const contextToUse = context || this.context;
     const contextJS = contextToUse.toJS();
-    console.error('[QuerySourceVector] Context keys:', Object.keys(contextJS));
-    console.error('[QuerySourceVector] K in context:', contextJS['@comunica/actor-query-source-identify-hypermedia-vector:k']);
 
     const materializationPromise = (async() => {
       if (options?.joinBindings) {
-        console.error('  joinBindings provided! Metadata variables:',
-          options.joinBindings.metadata.variables.map(v => v.variable.value));
-        console.error('  joinBindings stream type:', options.joinBindings.bindings.constructor.name);
-
-        console.error('  Materializing joinBindings stream...');
         const materialized: RDF.Bindings[] = [];
         try {
           for await (const binding of options.joinBindings.bindings) {
             materialized.push(binding);
           }
-          console.error(`  Materialized ${materialized.length} bindings`);
           return {
             bindings: materialized,
             metadata: options.joinBindings.metadata,
           };
-        } catch (error) {
-          console.error('  Error materializing joinBindings:', error);
+        } catch {
           return undefined;
         }
       }
-      console.error('  WARNING: No joinBindings in options - Comunica may not be passing them');
       return undefined;
     })();
 
@@ -119,17 +102,13 @@ export class QuerySourceVector implements IQuerySource {
     });
 
     const stream: BindingsStream = new TransformIterator(async() => {
-      console.error('[QuerySourceVector] Inside transform - starting pattern extraction');
       const operation = await operationPromise;
       const pattern = QuerySourceVector.extractSinglePattern(operation);
       if (!pattern) {
-        console.error('[QuerySourceVector] ERROR: No pattern found in operation:', operation.type);
         throw new Error('Vector source only supports single triple pattern operations');
       }
 
-      console.error('[QuerySourceVector] Pattern extracted successfully');
       const variables = algebraUtils.inScopeVariables(operation);
-      console.error('[QuerySourceVector] Variables:', variables.map(v => v.value));
 
       const materialized = await materializationPromise;
       let joinBindingsToUse = materialized ? {
@@ -139,7 +118,6 @@ export class QuerySourceVector implements IQuerySource {
       if (!joinBindingsToUse) {
         const valuesOp = QuerySourceVector.extractValuesFromOperation(operation);
         if (valuesOp) {
-          console.error('[QuerySourceVector] Found VALUES in operation, converting to joinBindings format');
           const valuesBindings: Bindings[] = valuesOp.bindings.map(b => {
             const entries: [RDF.Variable, RDF.Term][] = [];
             for (const v of valuesOp.variables) {
@@ -161,17 +139,14 @@ export class QuerySourceVector implements IQuerySource {
             cardinality: { type: 'exact', value: valuesOp.bindings.length },
           };
           joinBindingsToUse = { bindings: valuesStream, metadata: valuesMetadata };
-          console.error('[QuerySourceVector] Converted VALUES to joinBindings with', valuesBindings.length, 'rows');
         }
       }
 
       const kRaw = contextJS['@comunica/actor-query-source-identify-hypermedia-vector:k'];
       const k = kRaw !== undefined ? Number(kRaw) : 10;
-      console.error('[QuerySourceVector] Inside transform - K value from context:', kRaw, '-> converted to:', k, 'type:', typeof k);
 
       const body = await QuerySourceVector.buildRequestBody(pattern, variables, joinBindingsToUse, this.dataFactory, k);
 
-      const input = this.url;
       const init = {
         method: 'POST',
         headers: {
@@ -181,27 +156,16 @@ export class QuerySourceVector implements IQuerySource {
         body: JSON.stringify(body),
       } as RequestInit;
 
-      console.error('[QuerySourceVector] Sending pattern to', input);
-      console.error('[QuerySourceVector] Body (including k):', JSON.stringify(body, null, 2));
-
-      const response = await this.mediatorHttp.mediate({ input, init, context: contextToUse });
-      console.error('[QuerySourceVector] Got response, reading body stream...');
+      const response = await this.mediatorHttp.mediate({ input: this.url, init, context: contextToUse });
 
       if (!response.body) {
         throw new Error('Vector endpoint returned empty body');
       }
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of response.body) {
-        chunks.push(chunk);
-      }
-      const bodyText = Buffer.concat(chunks).toString('utf-8');
-      console.error('[QuerySourceVector] Body text:', bodyText.substring(0, 200));
+      const bodyText = await QuerySourceVector.readStreamToString(ActorHttp.toNodeReadable(response.body));
 
       const json = JSON.parse(bodyText);
-      console.error('[QuerySourceVector] Received rows:', json.rows?.length || 0);
       const rows: Record<string, unknown>[] = json.rows || [];
       const bindings = rows.map(row => this.rowToBindings(row));
-      console.error('[QuerySourceVector] Returning', bindings.length, 'bindings');
       return new ArrayIterator(bindings, { autoStart: false });
     }, { autoStart: false });
 
@@ -226,6 +190,17 @@ export class QuerySourceVector implements IQuerySource {
 
   public queryVoid(): never {
     throw new Error('Vector source does not support UPDATE');
+  }
+
+  public static readStreamToString(stream: NodeJS.ReadableStream): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      stream.on('data', (chunk: Buffer | string) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+      stream.on('error', reject);
+    });
   }
 
   protected rowToBindings(row: Record<string, unknown>): Bindings {
@@ -278,9 +253,8 @@ export class QuerySourceVector implements IQuerySource {
         for await (const binding of joinBindings.bindings) {
           rows.push(binding);
         }
-        console.error(`[QuerySourceVector] Read ${rows.length} binding rows from joinBindings stream`);
-      } catch (error) {
-        console.error('[QuerySourceVector] Error reading joinBindings stream:', error);
+      } catch {
+        // Ignore unreadable join binding streams.
       }
 
       if (rows.length > 0) {
