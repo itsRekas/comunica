@@ -62,7 +62,7 @@ describe('QuerySourceVector', () => {
     expect(body.k).toBe(7);
   });
 
-  it('should use default k when not set in context', async() => {
+  it('should omit k from the request body when not set in context', async() => {
     const ctxNoK = new ActionContext({ [KeysInitQuery.dataFactory.name]: DF });
     const src = new QuerySourceVector(url, ctxNoK, mediatorHttp, DF, AF, BF);
     const pattern = AF.createPattern(DF.namedNode('http://ex/s'), DF.variable('p'), DF.namedNode('http://ex/o'));
@@ -70,7 +70,7 @@ describe('QuerySourceVector', () => {
       BF.bindings([[ DF.variable('p'), DF.namedNode('http://ex/p1') ]]),
     ]);
     const body = JSON.parse(mediatorHttp.mediate.mock.calls.at(-1)[0].init.body);
-    expect(body.k).toBe(10);
+    expect(body.k).toBeUndefined();
   });
 
   it('should handle responses without a rows field', async() => {
@@ -190,6 +190,70 @@ describe('QuerySourceVector', () => {
     );
     expect(body.k).toBe(5);
     expect(body.values).toEqual([{ s: { type: 'iri', value: 'http://ex/s' }}]);
+  });
+
+  it('should build request body with adaptive multipliers as a string', async() => {
+    const pattern = AF.createPattern(DF.variable('s'), DF.variable('p'), DF.variable('o'));
+    const body = await QuerySourceVector.buildRequestBody(
+      pattern,
+      [ DF.variable('s') ],
+      undefined,
+      DF,
+      undefined,
+      '1, 10, bad, 0, 100',
+      0.99,
+    );
+    expect(body.adaptive_multipliers).toEqual([ 1, 10, 100 ]);
+    expect(body.adaptive_jaccard).toBe(0.99);
+    expect(body.k).toBeUndefined();
+  });
+
+  it('should build request body with adaptive multipliers as an array', async() => {
+    const pattern = AF.createPattern(DF.variable('s'), DF.variable('p'), DF.variable('o'));
+    const body = await QuerySourceVector.buildRequestBody(
+      pattern,
+      [ DF.variable('s') ],
+      undefined,
+      DF,
+      3,
+      [ 1, 10 ],
+      undefined,
+    );
+    expect(body.k).toBe(3);
+    expect(body.adaptive_multipliers).toEqual([ 1, 10 ]);
+    expect(body.adaptive_jaccard).toBeUndefined();
+  });
+
+  it('should omit adaptive fields when null', async() => {
+    const pattern = AF.createPattern(DF.variable('s'), DF.variable('p'), DF.variable('o'));
+    const body = await QuerySourceVector.buildRequestBody(
+      pattern,
+      [ DF.variable('s') ],
+      undefined,
+      DF,
+      undefined,
+      null,
+      null,
+    );
+    expect(body.adaptive_multipliers).toBeUndefined();
+    expect(body.adaptive_jaccard).toBeUndefined();
+  });
+
+  it('should forward adaptive options in queryBindings POST body', async() => {
+    const adaptiveCtx = new ActionContext({
+      [KeysInitQuery.dataFactory.name]: DF,
+      '@comunica/actor-query-source-identify-hypermedia-vector:adaptiveMultipliers': '1,10',
+      '@comunica/actor-query-source-identify-hypermedia-vector:adaptiveJaccard': 0.95,
+    });
+    const adaptiveSource = new QuerySourceVector(url, adaptiveCtx, mediatorHttp, DF, AF, BF);
+    const pattern = AF.createPattern(DF.namedNode('http://ex/s'), DF.variable('p'), DF.namedNode('http://ex/o'));
+    await expect(adaptiveSource.queryBindings(pattern, adaptiveCtx)).toEqualBindingsStream([
+      BF.bindings([[ DF.variable('p'), DF.namedNode('http://ex/p1') ]]),
+    ]);
+    const body = JSON.parse(mediatorHttp.mediate.mock.calls.at(-1)[0].init.body);
+    expect(body.adaptive_multipliers).toEqual([ 1, 10 ]);
+    expect(body.adaptive_jaccard).toBe(0.95);
+    expect(body.k).toBeUndefined();
   });
 
   it('should omit null terms in values rows when building the request body', async() => {

@@ -143,9 +143,21 @@ export class QuerySourceVector implements IQuerySource {
       }
 
       const kRaw = contextJS['@comunica/actor-query-source-identify-hypermedia-vector:k'];
-      const k = kRaw !== undefined ? Number(kRaw) : 10;
+      const k = kRaw !== undefined ? Number(kRaw) : undefined;
+      const adaptiveMultipliers =
+        contextJS['@comunica/actor-query-source-identify-hypermedia-vector:adaptiveMultipliers'];
+      const adaptiveJaccard =
+        contextJS['@comunica/actor-query-source-identify-hypermedia-vector:adaptiveJaccard'];
 
-      const body = await QuerySourceVector.buildRequestBody(pattern, variables, joinBindingsToUse, this.dataFactory, k);
+      const body = await QuerySourceVector.buildRequestBody(
+        pattern,
+        variables,
+        joinBindingsToUse,
+        this.dataFactory,
+        k,
+        adaptiveMultipliers,
+        adaptiveJaccard,
+      );
 
       const init = {
         method: 'POST',
@@ -236,8 +248,10 @@ export class QuerySourceVector implements IQuerySource {
     joinBindings: { bindings: BindingsStream; metadata: MetadataBindings } | undefined,
     df: ComunicaDataFactory,
     k?: number,
+    adaptiveMultipliers?: unknown,
+    adaptiveJaccard?: unknown,
   ): Promise<Record<string, unknown>> {
-    const kValue = k !== undefined && k !== null ? Number(k) : 10;
+    const kValue = k !== undefined && k !== null ? Number(k) : undefined;
     const body: Record<string, unknown> = {
       pattern: {
         subject: QuerySourceVector.termOrVarToJson(pattern.subject),
@@ -245,8 +259,22 @@ export class QuerySourceVector implements IQuerySource {
         object: QuerySourceVector.termOrVarToJson(pattern.object),
       },
       vars: variables.map(v => v.value),
-      k: kValue,
     };
+    if (kValue !== undefined) {
+      body.k = kValue;
+    }
+    if (adaptiveMultipliers !== undefined && adaptiveMultipliers !== null) {
+      if (typeof adaptiveMultipliers === 'string') {
+        body.adaptive_multipliers = adaptiveMultipliers.split(',')
+          .map(s => Number.parseInt(s.trim(), 10))
+          .filter(n => !Number.isNaN(n) && n > 0);
+      } else if (Array.isArray(adaptiveMultipliers)) {
+        body.adaptive_multipliers = adaptiveMultipliers;
+      }
+    }
+    if (adaptiveJaccard !== undefined && adaptiveJaccard !== null) {
+      body.adaptive_jaccard = Number(adaptiveJaccard);
+    }
     if (joinBindings) {
       const rows: RDF.Bindings[] = [];
       try {
