@@ -7,7 +7,7 @@ This tree (`comunica/`) is the **canonical** Comunica (`itsRekas/comunica`) with
 | Path | Role |
 | ---- | ---- |
 | `comunica/` | Comunica **5.2.2** — vector source, `comunica-vector`, SPARQL tweaks |
-| `vector-endpoint/` | Milvus + Flask API (`/vector`, `/sparql`) on port 2222 |
+| `vector-endpoint/` | Milvus + HTTP baseline (`:2222`) + gRPC streaming (`:50051`) |
 
 ## Build
 
@@ -27,11 +27,28 @@ cd ../query-sparql-file && yarn link
 
 ## Run vector queries
 
-With **vector-endpoint** on port 2222:
+Start the matching **vector-endpoint** process, then use `--http` or `--grpc`:
 
 ```bash
-comunica-vector http://localhost:2222/vector -k 10 -q 'SELECT ?s WHERE { ?s <http://example.org/occupation> "Software Engineer" }'
+# Terminal A — HTTP baseline
+cd vector-endpoint && .venv/bin/python -m vector_endpoint.app
+
+# Terminal B — gRPC streaming (optional)
+cd vector-endpoint && .venv/bin/python -m vector_endpoint.grpc_app
 ```
+
+```bash
+# HTTP (buffered JSON)
+comunica-vector --http http://localhost:2222/vector -k 10 -q \
+  'SELECT ?s WHERE { ?s <http://example.org/occupation> "Software Engineer" }'
+
+# gRPC (server-streaming rows)
+comunica-vector --grpc 127.0.0.1:50051 -k 10 -q \
+  'SELECT ?s WHERE { ?s <http://example.org/occupation> "Software Engineer" }'
+```
+
+`--http` and `--grpc` are mutually exclusive. Omitting both defaults to HTTP when the
+source URL uses `http://`.
 
 See `query.txt` for small example.org demos (not in the RLUBM vector index). Use **`query-lubm.txt`** for dim=8 LUBM smoke queries against `version_5`. `RLUBM_cleaned.nt` is used with `comunica-sparql-file` in benchmarks.
 

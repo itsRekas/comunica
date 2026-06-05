@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import {
+  KEY_VECTOR_TRANSPORT,
+  resolveVectorEndpoint,
+  type VectorTransport,
+} from '@comunica/actor-query-source-identify-hypermedia-vector';
 import { runArgsInProcess } from '@comunica/runner-cli';
 
 const argv = process.argv.slice(2);
@@ -9,6 +14,7 @@ let inOptions = false;
 let kValue: number | undefined;
 let adaptiveMultipliers: string | undefined;
 let adaptiveJaccard: number | undefined;
+let transportFlag: VectorTransport | undefined;
 
 const filteredArgv: string[] = [];
 for (let i = 0; i < argv.length; i++) {
@@ -28,6 +34,16 @@ for (let i = 0; i < argv.length; i++) {
       adaptiveJaccard = Number.parseFloat(argv[i + 1]);
       i++;
     }
+  } else if (arg === '--http') {
+    if (transportFlag) {
+      throw new Error('Cannot use both --http and --grpc');
+    }
+    transportFlag = 'http';
+  } else if (arg === '--grpc') {
+    if (transportFlag) {
+      throw new Error('Cannot use both --http and --grpc');
+    }
+    transportFlag = 'grpc';
   } else {
     filteredArgv.push(arg);
   }
@@ -35,7 +51,8 @@ for (let i = 0; i < argv.length; i++) {
 
 for (const arg of filteredArgv) {
   if (!inOptions && !arg.startsWith('-') && !arg.startsWith('{')) {
-    sources.push({ type: 'vector', value: arg });
+    const transport = transportFlag ?? (arg.startsWith('grpc://') ? 'grpc' : 'http');
+    sources.push({ type: 'vector', value: resolveVectorEndpoint(transport, arg) });
   } else {
     inOptions = true;
     rest.push(arg);
@@ -43,6 +60,9 @@ for (const arg of filteredArgv) {
 }
 
 const contextData: Record<string, unknown> = { sources };
+if (transportFlag) {
+  contextData[KEY_VECTOR_TRANSPORT] = transportFlag;
+}
 if (kValue !== undefined) {
   contextData['@comunica/actor-query-source-identify-hypermedia-vector:k'] = kValue;
 }

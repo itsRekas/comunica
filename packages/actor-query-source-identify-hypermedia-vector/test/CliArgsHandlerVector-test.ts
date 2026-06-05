@@ -22,6 +22,16 @@ describe('CliArgsHandlerVector', () => {
       describe: 'Jaccard stability threshold for adaptive vector search',
       group: 'Vector options:',
     },
+    http: {
+      type: 'boolean',
+      describe: 'Use HTTP JSON vector endpoint (baseline pipeline)',
+      group: 'Vector options:',
+    },
+    grpc: {
+      type: 'boolean',
+      describe: 'Use gRPC streaming vector endpoint',
+      group: 'Vector options:',
+    },
   };
 
   it('should be a CliArgsHandlerVector constructor', () => {
@@ -58,6 +68,24 @@ describe('CliArgsHandlerVector', () => {
     await handler.handleArgs({ adaptiveJaccard: 0.99 }, context);
     expect(context['@comunica/actor-query-source-identify-hypermedia-vector:adaptiveJaccard'])
       .toBe(0.99);
+  });
+
+  it('should handle http transport in context', async() => {
+    const context: Record<string, unknown> = {};
+    await handler.handleArgs({ http: true }, context);
+    expect(context['@comunica/actor-query-source-identify-hypermedia-vector:transport']).toBe('http');
+  });
+
+  it('should handle grpc transport in context', async() => {
+    const context: Record<string, unknown> = {};
+    await handler.handleArgs({ grpc: true }, context);
+    expect(context['@comunica/actor-query-source-identify-hypermedia-vector:transport']).toBe('grpc');
+  });
+
+  it('should reject both http and grpc', async() => {
+    await expect(handler.handleArgs({ http: true, grpc: true }, {})).rejects.toThrow(
+      'Cannot use both --http and --grpc',
+    );
   });
 
   it('should not set adaptive options when undefined', async() => {

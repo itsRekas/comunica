@@ -8,11 +8,14 @@ import { ArrayIterator } from 'asynciterator';
 import { DataFactory } from 'rdf-data-factory';
 import { Readable } from 'readable-stream';
 import { QuerySourceVector } from '../lib/QuerySourceVector';
+import type { IVectorGrpcClient } from '../lib/VectorGrpcClient';
+import { VectorGrpcClient } from '../lib/VectorGrpcClient';
 import '@comunica/utils-jest';
 
 const DF = new DataFactory();
 const AF = new AlgebraFactory(DF);
 const BF = new BindingsFactory(DF);
+const defaultCreateGrpcClient = QuerySourceVector.createGrpcClient;
 
 describe('QuerySourceVector', () => {
   const url = 'http://example.org/vector';
@@ -32,6 +35,10 @@ describe('QuerySourceVector', () => {
       '@comunica/actor-query-source-identify-hypermedia-vector:k': 7,
     });
     source = new QuerySourceVector(url, ctx, mediatorHttp, DF, AF, BF);
+  });
+
+  afterEach(() => {
+    QuerySourceVector.createGrpcClient = defaultCreateGrpcClient;
   });
 
   it('should support getFilterFactor and getSelectorShape', async() => {
@@ -293,15 +300,21 @@ describe('QuerySourceVector', () => {
     const values = AF.createValues([ DF.variable('s') ], <any>[
       { '?s': DF.namedNode('http://ex/s1') },
       { s: DF.blankNode('b0') },
+      { s: DF.literal('tag', 'en') },
     ]);
     const join = AF.createJoin([ values, pattern ], false);
     await expect(source.queryBindings(join, ctx)).toEqualBindingsStream([
       BF.bindings([[ DF.variable('p'), DF.namedNode('http://ex/p1') ]]),
     ]);
     const body = JSON.parse(mediatorHttp.mediate.mock.calls.at(-1)[0].init.body);
-    expect(body.values).toHaveLength(2);
+    expect(body.values).toHaveLength(3);
     expect(body.values[0].s).toEqual({ type: 'iri', value: 'http://ex/s1' });
     expect(body.values[1].s).toEqual({ type: 'bnode', value: 'b0' });
+    expect(body.values[2].s).toEqual({ type: 'literal', value: 'tag', lang: 'en' });
+  });
+
+  it('should construct clients with the default grpc factory', () => {
+    expect(QuerySourceVector.createGrpcClient('127.0.0.1:50051')).toBeInstanceOf(VectorGrpcClient);
   });
 
   it('should continue when joinBindings materialization fails', async() => {
@@ -389,5 +402,37 @@ describe('QuerySourceVector', () => {
       },
     });
     expect(op).toBe(pattern);
+  });
+
+  it('should query bindings via grpc without calling mediatorHttp', async() => {
+    const grpcCtx = new ActionContext({
+      [KeysInitQuery.dataFactory.name]: DF,
+      '@comunica/actor-query-source-identify-hypermedia-vector:transport': 'grpc',
+    });
+    const grpcSource = new QuerySourceVector('grpc://127.0.0.1:50051', grpcCtx, mediatorHttp, DF, AF, BF);
+    const mockClient: IVectorGrpcClient = {
+      queryPattern: async(_req, onRow) => {
+        onRow({ p: { type: 'iri', value: 'http://ex/p-grpc' }});
+        onRow({ p: { type: 'iri', value: 'http://ex/p-grpc-2' }});
+      },
+    };
+    QuerySourceVector.createGrpcClient = () => mockClient;
+    const pattern = AF.createPattern(DF.namedNode('http://ex/s'), DF.variable('p'), DF.namedNode('http://ex/o'));
+    const results = await grpcSource.queryBindings(pattern, grpcCtx).toArray();
+    expect(results).toHaveLength(2);
+    expect(mediateSpy.mock.calls).toHaveLength(0);
+  });
+
+  it('should use http transport from context even for grpc-looking operation', async() => {
+    const httpCtx = new ActionContext({
+      [KeysInitQuery.dataFactory.name]: DF,
+      '@comunica/actor-query-source-identify-hypermedia-vector:transport': 'http',
+    });
+    const httpSource = new QuerySourceVector('http://example.org/vector', httpCtx, mediatorHttp, DF, AF, BF);
+    const pattern = AF.createPattern(DF.namedNode('http://ex/s'), DF.variable('p'), DF.namedNode('http://ex/o'));
+    await expect(httpSource.queryBindings(pattern, httpCtx)).toEqualBindingsStream([
+      BF.bindings([[ DF.variable('p'), DF.namedNode('http://ex/p1') ]]),
+    ]);
+    expect(mediateSpy).toHaveBeenCalledTimes(1);
   });
 });

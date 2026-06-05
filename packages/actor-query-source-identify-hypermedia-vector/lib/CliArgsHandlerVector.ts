@@ -26,10 +26,29 @@ export class CliArgsHandlerVector implements ICliArgsHandler {
           describe: 'Jaccard stability threshold for adaptive vector search',
           group: 'Vector options:',
         },
+        http: {
+          type: 'boolean',
+          describe: 'Use HTTP JSON vector endpoint (baseline pipeline)',
+          group: 'Vector options:',
+        },
+        grpc: {
+          type: 'boolean',
+          describe: 'Use gRPC streaming vector endpoint',
+          group: 'Vector options:',
+        },
       });
   }
 
   public async handleArgs(args: Record<string, any>, context: Record<string, any>): Promise<void> {
+    if (args.http && args.grpc) {
+      throw new Error('Cannot use both --http and --grpc');
+    }
+    if (args.http) {
+      context['@comunica/actor-query-source-identify-hypermedia-vector:transport'] = 'http';
+    }
+    if (args.grpc) {
+      context['@comunica/actor-query-source-identify-hypermedia-vector:transport'] = 'grpc';
+    }
     if (args.k !== undefined) {
       context['@comunica/actor-query-source-identify-hypermedia-vector:k'] = args.k;
     }

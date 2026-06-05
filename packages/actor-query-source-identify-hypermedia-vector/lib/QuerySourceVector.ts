@@ -18,8 +18,17 @@ import type { BindingsFactory } from '@comunica/utils-bindings-factory';
 import { MetadataValidationState } from '@comunica/utils-metadata';
 import type * as RDF from '@rdfjs/types';
 import { TransformIterator, ArrayIterator } from 'asynciterator';
+import type { IVectorGrpcClient } from './VectorGrpcClient';
+import {
+  queryBindingsViaGrpc,
+  resolveTransport,
+  VectorGrpcClient,
+} from './VectorGrpcClient';
 
 export class QuerySourceVector implements IQuerySource {
+  public static createGrpcClient: (endpoint: string) => IVectorGrpcClient =
+    (endpoint: string) => new VectorGrpcClient(endpoint);
+
   public readonly referenceValue: string;
   private readonly url: string;
   private readonly context: IActionContext;
@@ -158,6 +167,18 @@ export class QuerySourceVector implements IQuerySource {
         adaptiveMultipliers,
         adaptiveJaccard,
       );
+
+      const transport = resolveTransport(contextJS, this.url);
+      if (transport === 'grpc') {
+        const bindings = await queryBindingsViaGrpc(
+          this.url,
+          body,
+          this.dataFactory,
+          this.bindingsFactory,
+          QuerySourceVector.createGrpcClient,
+        );
+        return new ArrayIterator(bindings, { autoStart: false });
+      }
 
       const init = {
         method: 'POST',
