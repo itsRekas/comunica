@@ -1,11 +1,15 @@
-import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
 import { BindingsFactory } from '@comunica/utils-bindings-factory';
+import { ArrayIterator } from 'asynciterator';
 import { DataFactory } from 'rdf-data-factory';
 
+import type { IVectorGrpcClient } from '../lib/VectorGrpcClient';
 import {
   KEY_VECTOR_TRANSPORT,
+  closeAllChannels,
   jsonBodyToGrpcRequest,
   parseGrpcTarget,
+  queryBindingsStreamViaGrpc,
   queryBindingsViaGrpc,
   resolveTransport,
   resolveVectorEndpoint,
@@ -15,14 +19,18 @@ import {
 } from '../lib/VectorGrpcClient';
 
 const mockQueryPattern = jest.fn();
+const mockClose = jest.fn();
+const mockServiceConstructor = jest.fn();
 
 jest.mock<typeof import('@grpc/grpc-js')>('@grpc/grpc-js', () => <typeof import('@grpc/grpc-js')><any>({
   loadPackageDefinition: jest.fn(() => ({
     vector: {
       v1: {
-        VectorPatternService: jest.fn().mockImplementation(() => ({
-          queryPattern: (...args: unknown[]) => mockQueryPattern(...args),
-        })),
+        VectorPatternService: function VectorPatternService(this: any, ...args: unknown[]) {
+          mockServiceConstructor(...args);
+          this.queryPattern = (...callArgs: unknown[]) => mockQueryPattern(...callArgs);
+          this.close = mockClose;
+        },
       },
     },
   })),
@@ -38,22 +46,15 @@ jest.mock<typeof import('@grpc/proto-loader')>('@grpc/proto-loader', () => <type
 const DF = new DataFactory();
 const BF = new BindingsFactory(DF);
 
-function scheduleStream(
-  events: Record<string, unknown>[],
-  opts: { streamError?: Error } = {},
-): EventEmitter {
-  const stream = new EventEmitter();
-  mockQueryPattern.mockReturnValueOnce(stream);
-  setImmediate(() => {
-    if (opts.streamError) {
-      stream.emit('error', opts.streamError);
-      return;
-    }
-    for (const event of events) {
-      stream.emit('data', event);
-    }
-    stream.emit('end');
-  });
+/** A Node object-mode Readable that emits the given events then ends (what `wrap` expects). */
+function readableOf(events: Record<string, unknown>[]): Readable {
+  return Readable.from(events, { objectMode: true });
+}
+
+/** A Readable that errors out asynchronously (simulates a transport/RPC failure). */
+function erroringReadable(error: Error): Readable {
+  const stream = new Readable({ objectMode: true, read() {} });
+  setImmediate(() => stream.destroy(error));
   return stream;
 }
 
@@ -147,30 +148,72 @@ describe('VectorGrpcClient helpers', () => {
   });
 });
 
-describe('VectorGrpcClient', () => {
+describe('VectorGrpcClient channel cache', () => {
   beforeEach(() => {
+    closeAllChannels();
     mockQueryPattern.mockReset();
+    mockClose.mockReset();
+    mockServiceConstructor.mockReset();
   });
 
-  it('should reuse cached proto package across clients', () => {
-    const client1 = new VectorGrpcClient('127.0.0.1:50051');
-    const client2 = new VectorGrpcClient('127.0.0.1:50051');
-    expect(client1).toBeDefined();
-    expect(client2).toBeDefined();
+  it('should reuse one channel per target and create distinct channels per target', () => {
+    // eslint-disable-next-line no-new
+    new VectorGrpcClient('127.0.0.1:50051');
+    // eslint-disable-next-line no-new
+    new VectorGrpcClient('127.0.0.1:50051');
+    expect(mockServiceConstructor).toHaveBeenCalledTimes(1);
+    // eslint-disable-next-line no-new
+    new VectorGrpcClient('other-host:9999');
+    expect(mockServiceConstructor).toHaveBeenCalledTimes(2);
+  });
+
+  it('should close and clear all cached channels', () => {
+    // eslint-disable-next-line no-new
+    new VectorGrpcClient('host-a:1');
+    // eslint-disable-next-line no-new
+    new VectorGrpcClient('host-b:2');
+    closeAllChannels();
+    expect(mockClose).toHaveBeenCalledTimes(2);
+    // A new construction after clearing rebuilds the channel.
+    mockServiceConstructor.mockClear();
+    // eslint-disable-next-line no-new
+    new VectorGrpcClient('host-a:1');
+    expect(mockServiceConstructor).toHaveBeenCalledTimes(1);
+  });
+
+  it('should bound the cache by dropping channels when it grows too large', () => {
+    for (let i = 0; i < 32; i++) {
+      // eslint-disable-next-line no-new
+      new VectorGrpcClient(`evict-${i}:1`);
+    }
+    expect(mockServiceConstructor).toHaveBeenCalledTimes(32);
+    // The 33rd distinct target trips the bound and closes the accumulated channels first.
+    // eslint-disable-next-line no-new
+    new VectorGrpcClient('evict-32:1');
+    expect(mockClose).toHaveBeenCalledTimes(32);
+    expect(mockServiceConstructor).toHaveBeenCalledTimes(33);
+  });
+});
+
+describe('VectorGrpcClient.queryPatternStream', () => {
+  beforeEach(() => {
+    closeAllChannels();
+    mockQueryPattern.mockReset();
+    mockClose.mockReset();
+    mockServiceConstructor.mockReset();
   });
 
   it('should stream single rows from grpc responses', async() => {
-    scheduleStream([
+    mockQueryPattern.mockReturnValueOnce(readableOf([
       { row: { bindings: { p: { type: 'iri', value: 'http://ex/p1' }}}},
-    ]);
-    const rows: Record<string, unknown>[] = [];
+    ]));
     const client = new VectorGrpcClient('127.0.0.1:50051');
-    await client.queryPattern({ pattern: {}, vars: [ 'p' ]}, row => rows.push(row));
+    const rows = await client.queryPatternStream({ pattern: {}, vars: [ 'p' ]}).toArray();
     expect(rows).toEqual([{ p: { type: 'iri', value: 'http://ex/p1' }}]);
   });
 
   it('should stream batched rows and skip empty bindings', async() => {
-    scheduleStream([
+    mockQueryPattern.mockReturnValueOnce(readableOf([
       {
         rowBatch: {
           rows: [
@@ -180,41 +223,74 @@ describe('VectorGrpcClient', () => {
           ],
         },
       },
-    ]);
-    const rows: Record<string, unknown>[] = [];
+    ]));
     const client = new VectorGrpcClient('127.0.0.1:50051');
-    await client.queryPattern({ pattern: {}, vars: []}, row => rows.push(row));
+    const rows = await client.queryPatternStream({ pattern: {}, vars: []}).toArray();
     expect(rows).toHaveLength(3);
     expect(rows[1]).toEqual({});
-    expect(rows[2].r).toEqual({ type: 'literal', value: 'x', lang: 'en', datatype: undefined });
+    expect((<any> rows[2]).r).toEqual({ type: 'literal', value: 'x', lang: 'en', datatype: undefined });
   });
 
-  it('should reject grpc error events and stream errors', async() => {
-    scheduleStream([{ error: { message: 'pattern failed' }}]);
+  it('should ignore metadata and done events', async() => {
+    mockQueryPattern.mockReturnValueOnce(readableOf([
+      { metadata: { vars: [ 'p' ]}},
+      { row: { bindings: { p: { type: 'iri', value: 'http://ex/p1' }}}},
+      { done: { totalRows: 1 }},
+    ]));
     const client = new VectorGrpcClient('127.0.0.1:50051');
-    await expect(client.queryPattern({ pattern: {}, vars: []}, () => undefined))
-      .rejects.toThrow('pattern failed');
+    const rows = await client.queryPatternStream({ pattern: {}, vars: [ 'p' ]}).toArray();
+    expect(rows).toEqual([{ p: { type: 'iri', value: 'http://ex/p1' }}]);
+  });
 
-    scheduleStream([], { streamError: new Error('rpc down') });
-    await expect(client.queryPattern({ pattern: {}, vars: []}, () => undefined))
+  it('should reject in-band error events', async() => {
+    mockQueryPattern.mockReturnValueOnce(readableOf([{ error: { message: 'pattern failed' }}]));
+    const client = new VectorGrpcClient('127.0.0.1:50051');
+    await expect(client.queryPatternStream({ pattern: {}, vars: []}).toArray())
+      .rejects.toThrow('pattern failed');
+  });
+
+  it('should propagate transport stream errors', async() => {
+    mockQueryPattern.mockReturnValueOnce(erroringReadable(new Error('rpc down')));
+    const client = new VectorGrpcClient('127.0.0.1:50051');
+    await expect(client.queryPatternStream({ pattern: {}, vars: []}).toArray())
       .rejects.toThrow('rpc down');
+  });
+
+  it('should cancel the rpc when the consumer stops early', async() => {
+    const cancel = jest.fn();
+    const stream = new Readable({ objectMode: true, read() {} });
+    (<any> stream).cancel = cancel;
+    mockQueryPattern.mockReturnValueOnce(stream);
+    const client = new VectorGrpcClient('127.0.0.1:50051');
+    const it = client.queryPatternStream({ pattern: {}, vars: [ 'p' ]});
+    stream.push({ rowBatch: { rows: [{ bindings: { p: { type: 'iri', value: 'http://ex/p1' }}}]}});
+    const first = await new Promise(resolve => it.once('data', resolve));
+    expect(first).toEqual({ p: { type: 'iri', value: 'http://ex/p1' }});
+    it.destroy();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('queryBindingsViaGrpc', () => {
+describe('queryBindingsStreamViaGrpc / queryBindingsViaGrpc', () => {
+  beforeEach(() => {
+    closeAllChannels();
+    mockQueryPattern.mockReset();
+    mockClose.mockReset();
+    mockServiceConstructor.mockReset();
+  });
+
   it('should convert streamed rows to bindings', async() => {
-    const mockClient = {
-      queryPattern: async(
-        _req: Record<string, unknown>,
-        onRow: (row: Record<string, unknown>) => void,
-      ) => {
-        onRow({ s: { type: 'iri', value: 'http://ex/s' }});
-        onRow({ n: { type: 'literal', value: 'hi', lang: 'en' }});
-        onRow({ c: { type: 'literal', value: '1', datatype: 'http://www.w3.org/2001/XMLSchema#integer' }});
-        onRow({ b: { type: 'bnode', value: 'b0' }});
-        onRow({ u: { type: 'uri', value: 'http://ex/u' }});
-        onRow({ plain: { type: 'literal', value: 'plain' }});
-      },
+    const mockClient: IVectorGrpcClient = {
+      queryPatternStream: () => new ArrayIterator<Record<string, unknown>>([
+        { s: { type: 'iri', value: 'http://ex/s' }},
+        { n: { type: 'literal', value: 'hi', lang: 'en' }},
+        { c: { type: 'literal', value: '1', datatype: 'http://www.w3.org/2001/XMLSchema#integer' }},
+        { b: { type: 'bnode', value: 'b0' }},
+        { u: { type: 'uri', value: 'http://ex/u' }},
+        { plain: { type: 'literal', value: 'plain' }},
+      ], { autoStart: false }),
     };
     const bindings = await queryBindingsViaGrpc(
       'grpc://127.0.0.1:50051',
@@ -230,10 +306,10 @@ describe('queryBindingsViaGrpc', () => {
     expect(bindings[3].get(DF.variable('b'))?.termType).toBe('BlankNode');
   });
 
-  it('should use the default grpc client factory', async() => {
-    scheduleStream([
+  it('should use the default grpc client factory (buffered)', async() => {
+    mockQueryPattern.mockReturnValueOnce(readableOf([
       { row: { bindings: { p: { type: 'iri', value: 'http://ex/p-default' }}}},
-    ]);
+    ]));
     const bindings = await queryBindingsViaGrpc(
       'grpc://127.0.0.1:50051',
       { pattern: {}, vars: [ 'p' ]},
@@ -244,14 +320,25 @@ describe('queryBindingsViaGrpc', () => {
     expect(bindings[0].get(DF.variable('p'))?.value).toBe('http://ex/p-default');
   });
 
-  it('should throw on unsupported term JSON', async() => {
-    const mockClient = {
-      queryPattern: async(
-        _req: Record<string, unknown>,
-        onRow: (row: Record<string, unknown>) => void,
-      ) => {
-        onRow({ bad: { type: 'unknown', value: 'x' }});
-      },
+  it('should stream bindings with the default grpc client factory', async() => {
+    mockQueryPattern.mockReturnValueOnce(readableOf([
+      { row: { bindings: { p: { type: 'iri', value: 'http://ex/p-stream' }}}},
+    ]));
+    const bindings = await queryBindingsStreamViaGrpc(
+      'grpc://127.0.0.1:50051',
+      { pattern: {}, vars: [ 'p' ]},
+      DF,
+      BF,
+    ).toArray();
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0].get(DF.variable('p'))?.value).toBe('http://ex/p-stream');
+  });
+
+  it('should error on unsupported term JSON', async() => {
+    const mockClient: IVectorGrpcClient = {
+      queryPatternStream: () => new ArrayIterator<Record<string, unknown>>([
+        { bad: { type: 'unknown', value: 'x' }},
+      ], { autoStart: false }),
     };
     await expect(queryBindingsViaGrpc(
       'grpc://127.0.0.1:50051',

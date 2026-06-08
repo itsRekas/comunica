@@ -20,7 +20,7 @@ import type * as RDF from '@rdfjs/types';
 import { TransformIterator, ArrayIterator } from 'asynciterator';
 import type { IVectorGrpcClient } from './VectorGrpcClient';
 import {
-  queryBindingsViaGrpc,
+  queryBindingsStreamViaGrpc,
   resolveTransport,
   VectorGrpcClient,
 } from './VectorGrpcClient';
@@ -170,14 +170,15 @@ export class QuerySourceVector implements IQuerySource {
 
       const transport = resolveTransport(contextJS, this.url);
       if (transport === 'grpc') {
-        const bindings = await queryBindingsViaGrpc(
+        // Return the live streaming iterator so bindings flow as the server produces them
+        // (the TransformIterator pipes with backpressure); only the request body is awaited.
+        return queryBindingsStreamViaGrpc(
           this.url,
           body,
           this.dataFactory,
           this.bindingsFactory,
           QuerySourceVector.createGrpcClient,
         );
-        return new ArrayIterator(bindings, { autoStart: false });
       }
 
       const init = {

@@ -2,8 +2,17 @@ import type { Bindings, ComunicaDataFactory } from '@comunica/types';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import type * as RDF from '@rdfjs/types';
+import type { AsyncIterator } from 'asynciterator';
+import { wrap } from 'asynciterator';
 
 export const KEY_VECTOR_TRANSPORT = '@comunica/actor-query-source-identify-hypermedia-vector:transport';
+
+// Mirror the server's VECTOR_GRPC_MAX_MESSAGE_BYTES default so large row batches are accepted.
+const MAX_MESSAGE_BYTES = 128 * 1024 * 1024;
+// Number of result rows buffered while streaming before backpressure pauses the gRPC call.
+const STREAM_BUFFER_SIZE = 128;
+// Safety bound: a single endpoint is expected, but guard against unbounded channel growth.
+const MAX_CACHED_CHANNELS = 32;
 
 export type VectorTransport = 'http' | 'grpc';
 
@@ -32,6 +41,73 @@ function loadProto(): grpc.GrpcObject {
     cachedPackage = grpc.loadPackageDefinition(packageDefinition);
   }
   return cachedPackage;
+}
+
+type GrpcPatternClient = {
+  queryPattern: (
+    request: Record<string, unknown>,
+  ) => grpc.ClientReadableStream<Record<string, unknown>>;
+  close: () => void;
+};
+
+type ProtoRoot = {
+  vector: {
+    v1: {
+      VectorPatternService: new(
+        address: string,
+        credentials: grpc.ChannelCredentials,
+        options?: Record<string, unknown>,
+      ) => GrpcPatternClient;
+    };
+  };
+};
+
+// One long-lived gRPC channel (client) per target, reused across BGPs/queries to
+// avoid a TCP + HTTP/2 handshake on every request.
+const clientCache = new Map<string, GrpcPatternClient>();
+
+let beforeExitRegistered = false;
+
+function registerBeforeExitHook(): void {
+  if (!beforeExitRegistered) {
+    beforeExitRegistered = true;
+    process.once('beforeExit', closeAllChannels);
+  }
+}
+
+function buildClient(target: string): GrpcPatternClient {
+  const proto = <ProtoRoot> <unknown> loadProto();
+  const Service = proto.vector.v1.VectorPatternService;
+  return new Service(target, grpc.credentials.createInsecure(), {
+    'grpc.max_receive_message_length': MAX_MESSAGE_BYTES,
+    'grpc.max_send_message_length': MAX_MESSAGE_BYTES,
+    'grpc.keepalive_time_ms': 30_000,
+    'grpc.keepalive_timeout_ms': 10_000,
+    'grpc.keepalive_permit_without_calls': 1,
+  });
+}
+
+function getCachedClient(target: string): GrpcPatternClient {
+  let client = clientCache.get(target);
+  if (!client) {
+    // Single endpoint is expected; if many distinct targets ever appear, drop the
+    // accumulated channels wholesale rather than growing the cache without bound.
+    if (clientCache.size >= MAX_CACHED_CHANNELS) {
+      closeAllChannels();
+    }
+    client = buildClient(target);
+    clientCache.set(target, client);
+  }
+  registerBeforeExitHook();
+  return client;
+}
+
+/** Close and drop all cached gRPC channels (for deterministic shutdown and tests). */
+export function closeAllChannels(): void {
+  for (const client of clientCache.values()) {
+    client.close();
+  }
+  clientCache.clear();
 }
 
 export function resolveTransport(contextJS: Record<string, unknown>, url: string): VectorTransport {
@@ -153,67 +229,78 @@ export function jsonBodyToGrpcRequest(body: Record<string, unknown>): Record<str
 }
 
 export interface IVectorGrpcClient {
-  queryPattern: (
+  queryPatternStream: (
     request: Record<string, unknown>,
-    onRow: (row: Record<string, unknown>) => void,
-  ) => Promise<void>;
+  ) => AsyncIterator<Record<string, unknown>>;
 }
-
-type GrpcPatternClient = {
-  queryPattern: (
-    request: Record<string, unknown>,
-  ) => grpc.ClientReadableStream<Record<string, unknown>>;
-};
 
 export class VectorGrpcClient implements IVectorGrpcClient {
   private readonly client: GrpcPatternClient;
 
   public constructor(endpoint: string) {
-    const target = parseGrpcTarget(endpoint);
-    type ProtoRoot = {
-      vector: {
-        v1: {
-          VectorPatternService: new(
-            address: string,
-            credentials: grpc.ChannelCredentials,
-          ) => GrpcPatternClient;
-        };
-      };
-    };
-    const proto = <ProtoRoot> <unknown> loadProto();
-    const Service = proto.vector.v1.VectorPatternService;
-    this.client = new Service(target, grpc.credentials.createInsecure());
+    this.client = getCachedClient(parseGrpcTarget(endpoint));
   }
 
-  public queryPattern(
-    request: Record<string, unknown>,
-    onRow: (row: Record<string, unknown>) => void,
-  ): Promise<void> {
+  /**
+   * Start a server-streaming QueryPattern RPC and expose the result rows as a lazy
+   * AsyncIterator. Rows (and row batches) are flattened; metadata/done events are dropped;
+   * in-band error events and transport errors surface as an iterator 'error'.
+   * Backpressure flows from the consumer to the gRPC call via the iterator buffer.
+   */
+  public queryPatternStream(request: Record<string, unknown>): AsyncIterator<Record<string, unknown>> {
     const grpcReq = jsonBodyToGrpcRequest(request);
     const call = this.client.queryPattern(grpcReq);
-    return new Promise((resolve, reject) => {
-      call.on('data', (event: Record<string, unknown>) => {
-        const error = <{ message?: string } | undefined> event.error;
-        if (error?.message) {
-          reject(new Error(error.message));
-          return;
-        }
-        const row = <{ bindings?: Record<string, ITermJson> } | undefined> event.row;
-        if (row?.bindings) {
-          onRow(bindingsMapToRow(row.bindings));
-        }
-        const rowBatch = <{ rows?: { bindings?: Record<string, ITermJson> }[] } | undefined> event.rowBatch;
-        if (rowBatch?.rows) {
-          for (const batchRow of rowBatch.rows) {
-            if (batchRow.bindings) {
-              onRow(bindingsMapToRow(batchRow.bindings));
+
+    const rows = wrap<Record<string, unknown>>(call, { maxBufferSize: STREAM_BUFFER_SIZE })
+      .transform<Record<string, unknown>>({
+        maxBufferSize: STREAM_BUFFER_SIZE,
+        transform(event: Record<string, unknown>, done: () => void, push: (row: Record<string, unknown>) => void) {
+          const error = <{ message?: string } | undefined> event.error;
+          if (error?.message) {
+            rows.destroy(new Error(error.message));
+            done();
+            return;
+          }
+          const single = <{ bindings?: Record<string, ITermJson> } | undefined> event.row;
+          if (single?.bindings) {
+            push(bindingsMapToRow(single.bindings));
+          }
+          const batch = <{ rows?: { bindings?: Record<string, ITermJson> }[] } | undefined> event.rowBatch;
+          if (batch?.rows) {
+            for (const batchRow of batch.rows) {
+              if (batchRow.bindings) {
+                push(bindingsMapToRow(batchRow.bindings));
+              }
             }
           }
-        }
+          done();
+        },
       });
-      call.on('error', (err: Error) => reject(err));
-      call.on('end', () => resolve());
-    });
+
+    // Cancel the RPC on early teardown (e.g. LIMIT) so the server stops producing.
+    // The iterator does NOT emit 'end' on destroy, and grpc-js does NOT cancel on stream
+    // destroy, so we hook the call's 'close' (fired by wrap destroying the source). 'status'
+    // marks natural completion so we skip a redundant cancel. 'once' handlers auto-remove.
+    let rpcSettled = false;
+    const markSettled = (): void => {
+      rpcSettled = true;
+    };
+    call.once('status', markSettled);
+    call.once('end', markSettled);
+
+    let cancelled = false;
+    const cancelIfRunning = (): void => {
+      if (!rpcSettled && !cancelled && typeof call.cancel === 'function') {
+        cancelled = true;
+        try {
+          call.cancel();
+        } catch {
+          // Ignore cancel failures (call may already be torn down).
+        }
+      }
+    };
+    call.once('close', cancelIfRunning);
+    return rows;
   }
 }
 
@@ -248,19 +335,41 @@ function termFromJson(term: unknown, df: ComunicaDataFactory): RDF.Term {
   throw new Error(`Unsupported term JSON: ${JSON.stringify(term)}`);
 }
 
-export async function queryBindingsViaGrpc(
+/**
+ * Stream result bindings from the gRPC vector endpoint as a lazy AsyncIterator.
+ * Term conversion errors surface as an iterator 'error' (via destroy).
+ */
+export function queryBindingsStreamViaGrpc(
+  endpoint: string,
+  body: Record<string, unknown>,
+  df: ComunicaDataFactory,
+  bindingsFactory: { bindings: (entries: [RDF.Variable, RDF.Term][]) => Bindings },
+  clientFactory: (ep: string) => IVectorGrpcClient = ep => new VectorGrpcClient(ep),
+): AsyncIterator<Bindings> {
+  const client = clientFactory(endpoint);
+  const out = client.queryPatternStream(body).transform<Bindings>({
+    transform(row: Record<string, unknown>, done: () => void, push: (binding: Bindings) => void) {
+      try {
+        const entries = Object.entries(row)
+          .map(([ v, t ]) => <[RDF.Variable, RDF.Term]> [ df.variable(v), termFromJson(t, df) ]);
+        push(bindingsFactory.bindings(entries));
+        done();
+      } catch (error) {
+        out.destroy(<Error> error);
+        done();
+      }
+    },
+  });
+  return out;
+}
+
+/** Buffered convenience wrapper over {@link queryBindingsStreamViaGrpc}. */
+export function queryBindingsViaGrpc(
   endpoint: string,
   body: Record<string, unknown>,
   df: ComunicaDataFactory,
   bindingsFactory: { bindings: (entries: [RDF.Variable, RDF.Term][]) => Bindings },
   clientFactory: (ep: string) => IVectorGrpcClient = ep => new VectorGrpcClient(ep),
 ): Promise<Bindings[]> {
-  const client = clientFactory(endpoint);
-  const bindings: Bindings[] = [];
-  await client.queryPattern(body, (row) => {
-    const entries = Object.entries(row)
-      .map(([ v, t ]) => <[RDF.Variable, RDF.Term]> [ df.variable(v), termFromJson(t, df) ]);
-    bindings.push(bindingsFactory.bindings(entries));
-  });
-  return bindings;
+  return queryBindingsStreamViaGrpc(endpoint, body, df, bindingsFactory, clientFactory).toArray();
 }

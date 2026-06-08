@@ -411,10 +411,10 @@ describe('QuerySourceVector', () => {
     });
     const grpcSource = new QuerySourceVector('grpc://127.0.0.1:50051', grpcCtx, mediatorHttp, DF, AF, BF);
     const mockClient: IVectorGrpcClient = {
-      queryPattern: async(_req, onRow) => {
-        onRow({ p: { type: 'iri', value: 'http://ex/p-grpc' }});
-        onRow({ p: { type: 'iri', value: 'http://ex/p-grpc-2' }});
-      },
+      queryPatternStream: () => new ArrayIterator<Record<string, unknown>>([
+        { p: { type: 'iri', value: 'http://ex/p-grpc' }},
+        { p: { type: 'iri', value: 'http://ex/p-grpc-2' }},
+      ], { autoStart: false }),
     };
     QuerySourceVector.createGrpcClient = () => mockClient;
     const pattern = AF.createPattern(DF.namedNode('http://ex/s'), DF.variable('p'), DF.namedNode('http://ex/o'));
